@@ -642,4 +642,66 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     });
     expect(overviewAfterResume.activeIncidents).toHaveLength(0);
   });
+
+  it("enforces a daily total_tokens budget for subscription-billed runs that cost zero cents", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const service = budgetService(db, { cancelWorkForScope });
+    // A generous money budget alongside the token budget: only the token budget should trip.
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "agent",
+      scopeId: agentId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 10_000,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    });
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "agent",
+      scopeId: agentId,
+      metric: "total_tokens",
+      windowKind: "calendar_day_utc",
+      amount: 300,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: false,
+      isActive: true,
+    });
+
+    // Each event is 100 input + 10 cached + 20 output = 130 tokens at 0 cents.
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    await insertCostEvent({ companyId, agentId, costCents: 0, occurredAt: yesterday });
+    await insertCostEvent({ companyId, agentId, costCents: 0 });
+    const secondToday = await insertCostEvent({ companyId, agentId, costCents: 0 });
+    await service.evaluateCostEvent(secondToday);
+
+    // 260 tokens today: under the 300 limit, and yesterday's event is outside the window.
+    expect(await service.getInvocationBlock(companyId, agentId)).toBeNull();
+    let [agent] = await db.select({ status: agents.status, pauseReason: agents.pauseReason }).from(agents);
+    expect(agent).toEqual({ status: "active", pauseReason: null });
+
+    // A third run takes today to 390 tokens, which blocks new work before the agent is even paused.
+    const thirdToday = await insertCostEvent({ companyId, agentId, costCents: 0 });
+    expect(await service.getInvocationBlock(companyId, agentId)).toEqual({
+      scopeType: "agent",
+      scopeId: agentId,
+      scopeName: "Budget Agent SECRET_TOKEN_SHOULD_NOT_LEAK",
+      reason: "Agent cannot start because its budget hard-stop is still exceeded.",
+    });
+
+    await service.evaluateCostEvent(thirdToday);
+    [agent] = await db.select({ status: agents.status, pauseReason: agents.pauseReason }).from(agents);
+    expect(agent).toEqual({ status: "paused", pauseReason: "budget" });
+    const hardIncidents = (await db.select().from(budgetIncidents)).filter(
+      (incident) => incident.thresholdType === "hard",
+    );
+    expect(hardIncidents).toHaveLength(1);
+    expect(hardIncidents[0]).toMatchObject({ amountLimit: 300, amountObserved: 390 });
+    expect(cancelWorkForScope).toHaveBeenCalledWith({ companyId, scopeType: "agent", scopeId: agentId });
+  });
 });

@@ -23,6 +23,7 @@ import type {
   BudgetThresholdType,
   BudgetWindowKind,
 } from "@paperclipai/shared";
+import { BUDGET_METRICS } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 
@@ -54,7 +55,14 @@ function currentUtcMonthWindow(now = new Date()) {
   return { start, end };
 }
 
+function currentUtcDayWindow(now = new Date()) {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0, 0));
+  return { start, end };
+}
+
 function resolveWindow(windowKind: BudgetWindowKind, now = new Date()) {
+  if (windowKind === "calendar_day_utc") return currentUtcDayWindow(now);
   if (windowKind === "lifetime") {
     return {
       start: new Date(Date.UTC(1970, 0, 1, 0, 0, 0, 0)),
@@ -141,25 +149,41 @@ async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: s
   };
 }
 
+function isSupportedMetric(metric: string): metric is BudgetMetric {
+  return (BUDGET_METRICS as readonly string[]).includes(metric);
+}
+
+/** The first active hard-stop policy whose window total has reached its amount, if any. */
+async function firstExceededHardStop(db: Db, policies: PolicyRow[]): Promise<PolicyRow | null> {
+  for (const policy of policies) {
+    if (!policy.hardStopEnabled || policy.amount <= 0 || !isSupportedMetric(policy.metric)) continue;
+    if ((await computeObservedAmount(db, policy)) >= policy.amount) return policy;
+  }
+  return null;
+}
+
 async function computeObservedAmount(
   db: Db,
   policy: Pick<PolicyRow, "companyId" | "scopeType" | "scopeId" | "windowKind" | "metric">,
 ) {
-  if (policy.metric !== "billed_cents") return 0;
+  if (!isSupportedMetric(policy.metric)) return 0;
 
   const conditions = [eq(costEvents.companyId, policy.companyId)];
   if (policy.scopeType === "agent") conditions.push(eq(costEvents.agentId, policy.scopeId));
   if (policy.scopeType === "project") conditions.push(eq(costEvents.projectId, policy.scopeId));
   const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
-  if (policy.windowKind === "calendar_month_utc") {
+  if (policy.windowKind !== "lifetime") {
     conditions.push(gte(costEvents.occurredAt, start));
     conditions.push(lt(costEvents.occurredAt, end));
   }
 
+  const total =
+    policy.metric === "total_tokens"
+      ? sql<number>`coalesce(sum(${costEvents.inputTokens} + ${costEvents.cachedInputTokens} + ${costEvents.outputTokens}), 0)::double precision`
+      : sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`;
+
   const [row] = await db
-    .select({
-      total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
-    })
+    .select({ total })
     .from(costEvents)
     .where(and(...conditions));
 
@@ -569,7 +593,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           .returning()
           .then((rows) => rows[0]);
 
-      if (input.scopeType === "company" && windowKind === "calendar_month_utc") {
+      if (input.scopeType === "company" && metric === "billed_cents" && windowKind === "calendar_month_utc") {
         await db
           .update(companies)
           .set({
@@ -579,7 +603,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           .where(eq(companies.id, input.scopeId));
       }
 
-      if (input.scopeType === "agent" && windowKind === "calendar_month_utc") {
+      if (input.scopeType === "agent" && metric === "billed_cents" && windowKind === "calendar_month_utc") {
         await db
           .update(agents)
           .set({
@@ -667,7 +691,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       });
 
       for (const policy of relevantPolicies) {
-        if (policy.metric !== "billed_cents" || policy.amount <= 0) continue;
+        if (!isSupportedMetric(policy.metric) || policy.amount <= 0) continue;
         const observedAmount = await computeObservedAmount(db, policy);
         const softThreshold = Math.ceil((policy.amount * policy.warnPercent) / 100);
 
@@ -755,29 +779,27 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         };
       }
 
-      const companyPolicy = await db
-        .select()
-        .from(budgetPolicies)
-        .where(
-          and(
-            eq(budgetPolicies.companyId, companyId),
-            eq(budgetPolicies.scopeType, "company"),
-            eq(budgetPolicies.scopeId, companyId),
-            eq(budgetPolicies.isActive, true),
-            eq(budgetPolicies.metric, "billed_cents"),
+      const companyPolicy = await firstExceededHardStop(
+        db,
+        await db
+          .select()
+          .from(budgetPolicies)
+          .where(
+            and(
+              eq(budgetPolicies.companyId, companyId),
+              eq(budgetPolicies.scopeType, "company"),
+              eq(budgetPolicies.scopeId, companyId),
+              eq(budgetPolicies.isActive, true),
+            ),
           ),
-        )
-        .then((rows) => rows[0] ?? null);
-      if (companyPolicy && companyPolicy.hardStopEnabled && companyPolicy.amount > 0) {
-        const observed = await computeObservedAmount(db, companyPolicy);
-        if (observed >= companyPolicy.amount) {
-          return {
-            scopeType: "company" as const,
-            scopeId: companyId,
-            scopeName: company.name,
-            reason: "Company cannot start new work because its budget hard-stop is exceeded.",
-          };
-        }
+      );
+      if (companyPolicy) {
+        return {
+          scopeType: "company" as const,
+          scopeId: companyId,
+          scopeName: company.name,
+          reason: "Company cannot start new work because its budget hard-stop is exceeded.",
+        };
       }
 
       if (agent.status === "paused" && agent.pauseReason === "budget") {
@@ -789,29 +811,27 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         };
       }
 
-      const agentPolicy = await db
-        .select()
-        .from(budgetPolicies)
-        .where(
-          and(
-            eq(budgetPolicies.companyId, companyId),
-            eq(budgetPolicies.scopeType, "agent"),
-            eq(budgetPolicies.scopeId, agentId),
-            eq(budgetPolicies.isActive, true),
-            eq(budgetPolicies.metric, "billed_cents"),
+      const agentPolicy = await firstExceededHardStop(
+        db,
+        await db
+          .select()
+          .from(budgetPolicies)
+          .where(
+            and(
+              eq(budgetPolicies.companyId, companyId),
+              eq(budgetPolicies.scopeType, "agent"),
+              eq(budgetPolicies.scopeId, agentId),
+              eq(budgetPolicies.isActive, true),
+            ),
           ),
-        )
-        .then((rows) => rows[0] ?? null);
-      if (agentPolicy && agentPolicy.hardStopEnabled && agentPolicy.amount > 0) {
-        const observed = await computeObservedAmount(db, agentPolicy);
-        if (observed >= agentPolicy.amount) {
-          return {
-            scopeType: "agent" as const,
-            scopeId: agentId,
-            scopeName: agent.name,
-            reason: "Agent cannot start because its budget hard-stop is still exceeded.",
-          };
-        }
+      );
+      if (agentPolicy) {
+        return {
+          scopeType: "agent" as const,
+          scopeId: agentId,
+          scopeName: agent.name,
+          reason: "Agent cannot start because its budget hard-stop is still exceeded.",
+        };
       }
 
       const candidateProjectId = context?.projectId ?? null;
@@ -830,29 +850,27 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         .then((rows) => rows[0] ?? null);
 
       if (!project || project.companyId !== companyId) return null;
-      const projectPolicy = await db
-        .select()
-        .from(budgetPolicies)
-        .where(
-          and(
-            eq(budgetPolicies.companyId, companyId),
-            eq(budgetPolicies.scopeType, "project"),
-            eq(budgetPolicies.scopeId, project.id),
-            eq(budgetPolicies.isActive, true),
-            eq(budgetPolicies.metric, "billed_cents"),
+      const projectPolicy = await firstExceededHardStop(
+        db,
+        await db
+          .select()
+          .from(budgetPolicies)
+          .where(
+            and(
+              eq(budgetPolicies.companyId, companyId),
+              eq(budgetPolicies.scopeType, "project"),
+              eq(budgetPolicies.scopeId, project.id),
+              eq(budgetPolicies.isActive, true),
+            ),
           ),
-        )
-        .then((rows) => rows[0] ?? null);
-      if (projectPolicy && projectPolicy.hardStopEnabled && projectPolicy.amount > 0) {
-        const observed = await computeObservedAmount(db, projectPolicy);
-        if (observed >= projectPolicy.amount) {
-          return {
-            scopeType: "project" as const,
-            scopeId: project.id,
-            scopeName: project.name,
-            reason: "Project cannot start work because its budget hard-stop is still exceeded.",
-          };
-        }
+      );
+      if (projectPolicy) {
+        return {
+          scopeType: "project" as const,
+          scopeId: project.id,
+          scopeName: project.name,
+          reason: "Project cannot start work because its budget hard-stop is still exceeded.",
+        };
       }
 
       if (!project.pausedAt || project.pauseReason !== "budget") return null;
@@ -897,14 +915,14 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           })
           .where(eq(budgetPolicies.id, policy.id));
 
-        if (policy.scopeType === "company" && policy.windowKind === "calendar_month_utc") {
+        if (policy.scopeType === "company" && policy.metric === "billed_cents" && policy.windowKind === "calendar_month_utc") {
           await db
             .update(companies)
             .set({ budgetMonthlyCents: nextAmount, updatedAt: now })
             .where(eq(companies.id, policy.scopeId));
         }
 
-        if (policy.scopeType === "agent" && policy.windowKind === "calendar_month_utc") {
+        if (policy.scopeType === "agent" && policy.metric === "billed_cents" && policy.windowKind === "calendar_month_utc") {
           await db
             .update(agents)
             .set({ budgetMonthlyCents: nextAmount, updatedAt: now })
