@@ -796,4 +796,28 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     const [approval] = await db.select().from(approvals);
     expect(approval).toMatchObject({ status: "approved", decidedByUserId: "system" });
   });
+
+  it("counts cached input at 10% for weighted_tokens budgets", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const service = budgetService(db, { cancelWorkForScope: vi.fn().mockResolvedValue(undefined) });
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "agent",
+      scopeId: agentId,
+      metric: "weighted_tokens",
+      windowKind: "calendar_day_utc",
+      amount: 250,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: false,
+      isActive: true,
+    });
+    // Each event: 100 input + 10 cached + 20 output = 130 raw, 121 weighted.
+    await insertCostEvent({ companyId, agentId, costCents: 0 });
+    await insertCostEvent({ companyId, agentId, costCents: 0 });
+    // 242 weighted is under 250, although 260 raw tokens would exceed it.
+    expect(await service.getInvocationBlock(companyId, agentId)).toBeNull();
+    await insertCostEvent({ companyId, agentId, costCents: 0 });
+    expect(await service.getInvocationBlock(companyId, agentId)).toMatchObject({ scopeType: "agent", scopeId: agentId });
+  });
 });

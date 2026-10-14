@@ -196,7 +196,9 @@ async function computeObservedAmount(
   const total =
     policy.metric === "total_tokens"
       ? sql<number>`coalesce(sum(${costEvents.inputTokens} + ${costEvents.cachedInputTokens} + ${costEvents.outputTokens}), 0)::double precision`
-      : sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`;
+      : policy.metric === "weighted_tokens"
+        ? sql<number>`coalesce(round(sum(${costEvents.inputTokens} + ${costEvents.cachedInputTokens} * 0.1 + ${costEvents.outputTokens})), 0)::double precision`
+        : sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`;
 
   const [row] = await db
     .select({ total })

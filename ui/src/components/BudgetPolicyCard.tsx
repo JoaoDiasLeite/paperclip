@@ -1,30 +1,11 @@
 import { useEffect, useState } from "react";
 import type { BudgetPolicySummary } from "@paperclipai/shared";
 import { AlertTriangle, PauseCircle, ShieldAlert, Wallet } from "lucide-react";
-import { cn, formatCents } from "../lib/utils";
+import { cn } from "../lib/utils";
+import { budgetAmountInputValue, formatBudgetAmount, isTokenBudgetMetric, parseBudgetAmountInput } from "../lib/budget-format";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-
-type Metric = BudgetPolicySummary["metric"];
-
-const tokenFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
-
-function formatAmount(metric: Metric, value: number) {
-  return metric === "total_tokens" ? `${tokenFormatter.format(value)} tokens` : formatCents(value);
-}
-
-function amountInputValue(metric: Metric, value: number) {
-  return metric === "total_tokens" ? String(value) : (value / 100).toFixed(2);
-}
-
-function parseAmountInput(metric: Metric, value: string) {
-  const normalized = value.trim().replace(/[_,\s]/g, "");
-  if (normalized.length === 0) return 0;
-  const parsed = Number(normalized);
-  if (!Number.isFinite(parsed) || parsed < 0) return null;
-  return metric === "total_tokens" ? Math.round(parsed) : Math.round(parsed * 100);
-}
 
 function windowLabel(windowKind: BudgetPolicySummary["windowKind"]) {
   if (windowKind === "lifetime") return "Lifetime budget";
@@ -51,18 +32,18 @@ export function BudgetPolicyCard({
   compact?: boolean;
   variant?: "card" | "plain";
 }) {
-  const [draftBudget, setDraftBudget] = useState(amountInputValue(summary.metric, summary.amount));
+  const [draftBudget, setDraftBudget] = useState(budgetAmountInputValue(summary.metric, summary.amount));
 
   useEffect(() => {
-    setDraftBudget(amountInputValue(summary.metric, summary.amount));
+    setDraftBudget(budgetAmountInputValue(summary.metric, summary.amount));
   }, [summary.metric, summary.amount]);
 
-  const parsedDraft = parseAmountInput(summary.metric, draftBudget);
+  const parsedDraft = parseBudgetAmountInput(summary.metric, draftBudget);
   const canSave = typeof parsedDraft === "number" && parsedDraft !== summary.amount && Boolean(onSave);
   const progress = summary.amount > 0 ? Math.min(100, summary.utilizationPercent) : 0;
   const StatusIcon = summary.status === "hard_stop" ? ShieldAlert : summary.status === "warning" ? AlertTriangle : Wallet;
   const isPlain = variant === "plain";
-  const isTokenBudget = summary.metric === "total_tokens";
+  const isTokenBudget = isTokenBudgetMetric(summary.metric);
   const invalidAmountMessage = isTokenBudget
     ? "Enter a valid non-negative number of tokens."
     : "Enter a valid non-negative dollar amount.";
@@ -71,7 +52,7 @@ export function BudgetPolicyCard({
     <div className="grid gap-6 sm:grid-cols-2">
       <div>
         <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Observed</div>
-        <div className="mt-2 text-xl font-semibold tabular-nums">{formatAmount(summary.metric, summary.observedAmount)}</div>
+        <div className="mt-2 text-xl font-semibold tabular-nums">{formatBudgetAmount(summary.metric, summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
           {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
         </div>
@@ -79,7 +60,7 @@ export function BudgetPolicyCard({
       <div>
         <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Budget</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">
-          {summary.amount > 0 ? formatAmount(summary.metric, summary.amount) : "Disabled"}
+          {summary.amount > 0 ? formatBudgetAmount(summary.metric, summary.amount) : "Disabled"}
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
           Soft alert at {summary.warnPercent}%{summary.paused && summary.pauseReason ? ` · ${summary.pauseReason} pause` : ""}
@@ -90,7 +71,7 @@ export function BudgetPolicyCard({
     <div className="grid gap-3 sm:grid-cols-2">
       <div className="rounded-xl border border-border/70 bg-black/[0.18] px-4 py-3">
         <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Observed</div>
-        <div className="mt-2 text-xl font-semibold tabular-nums">{formatAmount(summary.metric, summary.observedAmount)}</div>
+        <div className="mt-2 text-xl font-semibold tabular-nums">{formatBudgetAmount(summary.metric, summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
           {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
         </div>
@@ -98,7 +79,7 @@ export function BudgetPolicyCard({
       <div className="rounded-xl border border-border/70 bg-black/[0.18] px-4 py-3">
         <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Budget</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">
-          {summary.amount > 0 ? formatAmount(summary.metric, summary.amount) : "Disabled"}
+          {summary.amount > 0 ? formatBudgetAmount(summary.metric, summary.amount) : "Disabled"}
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
           Soft alert at {summary.warnPercent}%{summary.paused && summary.pauseReason ? ` · ${summary.pauseReason} pause` : ""}
@@ -111,7 +92,7 @@ export function BudgetPolicyCard({
     <div className="space-y-2">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>Remaining</span>
-        <span>{summary.amount > 0 ? formatAmount(summary.metric, summary.remainingAmount) : "Unlimited"}</span>
+        <span>{summary.amount > 0 ? formatBudgetAmount(summary.metric, summary.remainingAmount) : "Unlimited"}</span>
       </div>
       <div className={cn("h-2 overflow-hidden rounded-full", isPlain ? "bg-border/70" : "bg-muted/70")}>
         <div

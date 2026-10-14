@@ -1,21 +1,11 @@
 import { useState } from "react";
 import type { BudgetIncident } from "@paperclipai/shared";
 import { AlertOctagon, ArrowUpRight, PauseCircle } from "lucide-react";
-import { formatCents } from "../lib/utils";
+import { budgetAmountInputValue, budgetAmountLabel, formatBudgetAmount, isTokenBudgetMetric, parseBudgetAmountInput } from "../lib/budget-format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-
-function centsInputValue(value: number) {
-  return (value / 100).toFixed(2);
-}
-
-function parseDollarInput(value: string) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) return null;
-  return Math.round(parsed * 100);
-}
 
 function incidentStateLabel(incident: BudgetIncident) {
   if (incident.status === "resolved") return "Resolved";
@@ -36,10 +26,14 @@ export function BudgetIncidentCard({
   onKeepPaused: () => void;
   isMutating?: boolean;
 }) {
+  const isTokens = isTokenBudgetMetric(incident.metric);
   const [draftAmount, setDraftAmount] = useState(
-    centsInputValue(Math.max(incident.amountObserved + 1000, incident.amountLimit)),
+    budgetAmountInputValue(
+      incident.metric,
+      Math.max(incident.amountObserved + (isTokens ? 100_000 : 1000), incident.amountLimit),
+    ),
   );
-  const parsed = parseDollarInput(draftAmount);
+  const parsed = parseBudgetAmountInput(incident.metric, draftAmount);
   const stateLabel = incidentStateLabel(incident);
 
   return (
@@ -57,7 +51,7 @@ export function BudgetIncidentCard({
             </div>
             <CardTitle className="mt-1 text-base text-red-950 dark:text-red-50">{incident.scopeName}</CardTitle>
             <CardDescription className="mt-1 text-red-900/75 dark:text-red-100/70">
-              Spending reached {formatCents(incident.amountObserved)} against a limit of {formatCents(incident.amountLimit)}.
+              {isTokens ? "Usage" : "Spending"} reached {formatBudgetAmount(incident.metric, incident.amountObserved)} against a limit of {formatBudgetAmount(incident.metric, incident.amountLimit)}.
             </CardDescription>
           </div>
           <div className="rounded-full border border-red-400/30 bg-red-500/10 p-2 text-red-600 dark:text-red-200">
@@ -77,14 +71,14 @@ export function BudgetIncidentCard({
 
         <div className="rounded-xl border border-border/60 bg-background/60 p-3">
           <label className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">
-            New budget (USD)
+            New budget ({budgetAmountLabel(incident.metric)})
           </label>
           <div className="mt-2 flex flex-col gap-3 sm:flex-row">
             <Input
               value={draftAmount}
               onChange={(event) => setDraftAmount(event.target.value)}
-              inputMode="decimal"
-              placeholder="0.00"
+              inputMode={isTokens ? "numeric" : "decimal"}
+              placeholder={isTokens ? "0" : "0.00"}
             />
             <Button
               className="gap-2"
@@ -99,7 +93,7 @@ export function BudgetIncidentCard({
           </div>
           {parsed !== null && parsed <= incident.amountObserved ? (
             <p className="mt-2 text-xs text-red-700 dark:text-red-200/80">
-              The new budget must exceed current observed spend.
+              The new budget must exceed current observed {isTokens ? "usage" : "spend"}.
             </p>
           ) : null}
         </div>

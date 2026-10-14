@@ -879,7 +879,9 @@ export type BudgetScopeType = (typeof BUDGET_SCOPE_TYPES)[number];
 // still means something for subscription-billed runs, whose billed cost is zero.
 // api_equivalent_cents prices every run at metered API rates (the adapter-reported
 // costUsd), so cached tokens and cheaper models weigh what they would really cost.
-export const BUDGET_METRICS = ["billed_cents", "total_tokens", "api_equivalent_cents"] as const;
+// weighted_tokens counts cached input at 10%, the usual provider discount for cache reads,
+// so long agentic runs that re-read a cached context are not over-counted.
+export const BUDGET_METRICS = ["billed_cents", "total_tokens", "weighted_tokens", "api_equivalent_cents"] as const;
 export type BudgetMetric = (typeof BUDGET_METRICS)[number];
 
 export const BUDGET_WINDOW_KINDS = ["calendar_month_utc", "calendar_day_utc", "lifetime"] as const;
