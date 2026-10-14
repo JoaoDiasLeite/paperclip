@@ -67,6 +67,7 @@ import {
   feedbackService,
   applyManagedEnvironments,
   attentionService,
+  budgetService,
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
@@ -1168,6 +1169,7 @@ async function startServerWithDatabaseTeardown(
     ["status_delivery", () => deliverExecutionStatuses(db)],
     ["automatic_disposition", () => settleUnrecoverableExecutions(db)],
     ["local_ai_login_cleanup", () => localAiLoginService(db).reapExpired()],
+    ["budget_daily_resume", () => budgetService(db).resumeExpiredDailyHardStops()],
   ] as const;
   const sweepExecutionControl = () => {
     if (heartbeatSchedulerStopped || isWarmStandby()) return;

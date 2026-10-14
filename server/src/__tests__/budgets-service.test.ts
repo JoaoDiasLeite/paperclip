@@ -8,6 +8,7 @@ import {
   companies,
   costEvents,
   createDb,
+  heartbeatRuns,
   projects,
 } from "@paperclipai/db";
 import { budgetService } from "../services/budgets.ts";
@@ -347,6 +348,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     await db.delete(approvals);
     await db.delete(budgetPolicies);
     await db.delete(costEvents);
+    await db.delete(heartbeatRuns);
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
@@ -703,5 +705,95 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     expect(hardIncidents).toHaveLength(1);
     expect(hardIncidents[0]).toMatchObject({ amountLimit: 300, amountObserved: 390 });
     expect(cancelWorkForScope).toHaveBeenCalledWith({ companyId, scopeType: "agent", scopeId: agentId });
+  });
+
+  it("prices api_equivalent_cents budgets from each run's reported API cost, not billed cents", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const service = budgetService(db, { cancelWorkForScope: vi.fn().mockResolvedValue(undefined) });
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "agent",
+      scopeId: agentId,
+      metric: "api_equivalent_cents",
+      windowKind: "calendar_day_utc",
+      amount: 100,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: false,
+      isActive: true,
+    });
+
+    async function subscriptionRun(costUsd: number) {
+      const [run] = await db
+        .insert(heartbeatRuns)
+        .values({ companyId, agentId, status: "succeeded", usageJson: { costUsd, billingType: "subscription_included" } })
+        .returning();
+      // Two cost events for the same run must not double-count its price.
+      for (let i = 0; i < 2; i += 1) {
+        await db.insert(costEvents).values({
+          companyId,
+          agentId,
+          heartbeatRunId: run!.id,
+          provider: "anthropic",
+          biller: "anthropic",
+          billingType: "subscription_included",
+          model: "claude-sonnet",
+          inputTokens: 100,
+          outputTokens: 20,
+          costCents: 0,
+          occurredAt: new Date(),
+        });
+      }
+    }
+
+    await subscriptionRun(0.6);
+    expect(await service.getInvocationBlock(companyId, agentId)).toBeNull();
+    await subscriptionRun(0.45);
+    expect(await service.getInvocationBlock(companyId, agentId)).toMatchObject({
+      scopeType: "agent",
+      scopeId: agentId,
+      reason: "Agent cannot start because its budget hard-stop is still exceeded.",
+    });
+  });
+
+  it("resumes an agent paused by a daily budget once that day has ended", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const service = budgetService(db, { cancelWorkForScope: vi.fn().mockResolvedValue(undefined) });
+    const [policy] = await db
+      .insert(budgetPolicies)
+      .values({
+        companyId,
+        scopeType: "agent",
+        scopeId: agentId,
+        metric: "total_tokens",
+        windowKind: "calendar_day_utc",
+        amount: 200,
+        warnPercent: 80,
+        hardStopEnabled: true,
+        notifyEnabled: false,
+        isActive: true,
+      })
+      .returning();
+    const event = await insertCostEvent({ companyId, agentId, costCents: 0 });
+    await insertCostEvent({ companyId, agentId, costCents: 0 });
+    await service.evaluateCostEvent(event);
+    let [agent] = await db.select({ status: agents.status, pauseReason: agents.pauseReason }).from(agents);
+    expect(agent).toEqual({ status: "paused", pauseReason: "budget" });
+
+    // Same day: nothing to resume yet.
+    expect(await service.resumeExpiredDailyHardStops(new Date())).toEqual({ resumed: 0 });
+
+    // Next day: the stop belongs to a finished window and today's usage is zero.
+    await db.delete(costEvents);
+    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    expect(await service.resumeExpiredDailyHardStops(tomorrow)).toEqual({ resumed: 1 });
+    [agent] = await db.select({ status: agents.status, pauseReason: agents.pauseReason }).from(agents);
+    expect(agent).toEqual({ status: "idle", pauseReason: null });
+    const open = (await db.select().from(budgetIncidents)).filter(
+      (incident) => incident.policyId === policy!.id && incident.status === "open",
+    );
+    expect(open).toHaveLength(0);
+    const [approval] = await db.select().from(approvals);
+    expect(approval).toMatchObject({ status: "approved", decidedByUserId: "system" });
   });
 });

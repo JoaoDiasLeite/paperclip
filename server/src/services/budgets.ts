@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, lte, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { recordAgentStatusEvent } from "./resource-lifecycle-events.js";
 import {
@@ -8,6 +8,7 @@ import {
   budgetPolicies,
   companies,
   costEvents,
+  heartbeatRuns,
   projects,
 } from "@paperclipai/db";
 import type {
@@ -25,6 +26,7 @@ import type {
 } from "@paperclipai/shared";
 import { BUDGET_METRICS } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
+import { subscriptionQuotaBlockReason } from "./subscription-quota-guard.js";
 import { logActivity } from "./activity-log.js";
 
 type ScopeRecord = {
@@ -175,6 +177,20 @@ async function computeObservedAmount(
   if (policy.windowKind !== "lifetime") {
     conditions.push(gte(costEvents.occurredAt, start));
     conditions.push(lt(costEvents.occurredAt, end));
+  }
+
+  if (policy.metric === "api_equivalent_cents") {
+    const runIds = db
+      .select({ id: costEvents.heartbeatRunId })
+      .from(costEvents)
+      .where(and(...conditions));
+    const [row] = await db
+      .select({
+        total: sql<number>`coalesce(sum(coalesce((${heartbeatRuns.usageJson}->>'costUsd')::numeric, 0) * 100), 0)::double precision`,
+      })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, runIds));
+    return Number(row?.total ?? 0);
   }
 
   const total =
@@ -740,6 +756,49 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       }
     },
 
+    /**
+     * A daily budget renews every UTC day, so a hard stop from a finished day should not
+     * keep the scope paused. Resolves those incidents and resumes the scope when the new
+     * day's usage is still under the limit. Scopes held by any other open hard incident
+     * stay paused.
+     */
+    resumeExpiredDailyHardStops: async (now = new Date()) => {
+      const expired = await db
+        .select({ incident: budgetIncidents, policy: budgetPolicies })
+        .from(budgetIncidents)
+        .innerJoin(budgetPolicies, eq(budgetPolicies.id, budgetIncidents.policyId))
+        .where(
+          and(
+            eq(budgetIncidents.status, "open"),
+            eq(budgetIncidents.thresholdType, "hard"),
+            eq(budgetPolicies.windowKind, "calendar_day_utc"),
+            lte(budgetIncidents.windowEnd, now),
+          ),
+        );
+      let resumed = 0;
+      for (const { incident, policy } of expired) {
+        if (policy.isActive && policy.amount > 0 && (await computeObservedAmount(db, policy)) >= policy.amount) continue;
+        await resolveOpenIncidentsForPolicy(policy.id, null, null);
+        await markApprovalStatus(db, incident.approvalId ?? null, "approved", "Daily budget window renewed", "system");
+        const otherHardStops = await db
+          .select({ id: budgetIncidents.id })
+          .from(budgetIncidents)
+          .where(
+            and(
+              eq(budgetIncidents.companyId, policy.companyId),
+              eq(budgetIncidents.scopeType, policy.scopeType),
+              eq(budgetIncidents.scopeId, policy.scopeId),
+              eq(budgetIncidents.status, "open"),
+              eq(budgetIncidents.thresholdType, "hard"),
+            ),
+          );
+        if (otherHardStops.length > 0) continue;
+        await resumeScopeFromBudget(policy);
+        resumed += 1;
+      }
+      return { resumed };
+    },
+
     getInvocationBlock: async (
       companyId: string,
       agentId: string,
@@ -751,6 +810,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           pauseReason: agents.pauseReason,
           companyId: agents.companyId,
           name: agents.name,
+          adapterType: agents.adapterType,
         })
         .from(agents)
         .where(eq(agents.id, agentId))
@@ -831,6 +891,16 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           scopeId: agentId,
           scopeName: agent.name,
           reason: "Agent cannot start because its budget hard-stop is still exceeded.",
+        };
+      }
+
+      const quotaReason = agent.adapterType ? await subscriptionQuotaBlockReason(agent.adapterType) : null;
+      if (quotaReason) {
+        return {
+          scopeType: "agent" as const,
+          scopeId: agentId,
+          scopeName: agent.name,
+          reason: quotaReason,
         };
       }
 
