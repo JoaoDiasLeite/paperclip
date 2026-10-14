@@ -104,6 +104,10 @@ case "$cmd" in
     body=$(jq -nc --arg t "$title" --arg b "$text" --arg r "$base" \
       '{title: $t, format: "markdown", body: $b, baseRevisionId: (if $r == "" then null else $r end)}')
     api PUT "/api/issues/$id/documents/$key" "$body" | compact '{key, latestRevisionId}' ;;
+  readdoc)
+    id=${1:?issue required}
+    key=${2:?document key required}
+    api GET "/api/issues/$id/documents/$key" | jq -r '.body // empty' ;;
   inbox)
     api GET "/api/agents/me/inbox-lite" | compact ;;
   raw)

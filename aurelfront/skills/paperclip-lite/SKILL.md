@@ -32,6 +32,7 @@ Text arguments are read from **stdin** so Markdown and line breaks survive.
 | Ask the board to approve something | `pct approval [ISSUE] "Title" <<'EOF' summary + recommendation EOF` |
 | Ask a person a question and wait | `pct ask [ISSUE] <<'EOF' question EOF` (saves the card, sets `in_review`) |
 | Save a Markdown document on the task | `pct doc [ISSUE] KEY "Title" <<'EOF' ... EOF` |
+| Read a task document (Markdown only) | `pct readdoc ISSUE KEY` |
 | My open assignments | `pct inbox` |
 | Any other API call | `pct raw METHOD /api/path [JSON]` |
 
