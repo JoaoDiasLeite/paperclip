@@ -123,6 +123,18 @@ describe("legacy adapter skill selection", () => {
     ).toEqual([PAPERCLIP_OPERATIONAL_SKILL_KEY]);
   });
 
+  it("skips the operational skill when the agent opts out of the mount", () => {
+    expect(
+      resolveLegacyPaperclipDesiredSkillNames(
+        {
+          paperclipOperationalSkillMount: false,
+          paperclipSkillSync: { desiredSkills: [optionalEntry.key] },
+        },
+        [operationalEntry, optionalEntry],
+      ),
+    ).toEqual([optionalEntry.key]);
+  });
+
   it("does not force optional skills or synthesize a missing operational entry", () => {
     const config = {
       paperclipSkillSync: { desiredSkills: [optionalEntry.key] },

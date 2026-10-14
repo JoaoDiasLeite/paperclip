@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# pct: compact Paperclip task helper for agents. See ../SKILL.md for usage.
+# Text payloads come from stdin and are JSON-encoded with jq, never interpolated into shell.
+set -euo pipefail
+
+: "${PAPERCLIP_API_URL:?PAPERCLIP_API_URL is not set}"
+: "${PAPERCLIP_API_KEY:?PAPERCLIP_API_KEY is not set}"
+BASE="${PAPERCLIP_API_URL%/}"
+BASE="${BASE%/api}"
+
+api() { # api METHOD PATH [JSON]
+  local method=$1 path=$2 body=${3:-}
+  local args=(-sS -X "$method" -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "Accept: application/json")
+  [ -n "${PAPERCLIP_RUN_ID:-}" ] && args+=(-H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID")
+  [ -n "$body" ] && args+=(-H "Content-Type: application/json" --data-binary "$body")
+  local out code
+  out=$(curl "${args[@]}" -w $'\n%{http_code}' "$BASE$path")
+  code=${out##*$'\n'}
+  out=${out%$'\n'*}
+  if [ "$code" -ge 400 ]; then
+    echo "HTTP $code $method $path: $out" >&2
+    return 1
+  fi
+  printf '%s\n' "$out"
+}
+
+# A heredoc arrives instantly; the timeout stops an idle, never-closed stdin from hanging the run.
+stdin_text() { [ -t 0 ] && return 0; timeout 5 cat || true; }
+
+issue_arg() { # first arg or PAPERCLIP_TASK_ID
+  local value=${1:-${PAPERCLIP_TASK_ID:-}}
+  [ -n "$value" ] || { echo "pct: no issue given and PAPERCLIP_TASK_ID is empty" >&2; exit 2; }
+  printf '%s' "$value"
+}
+
+compact() { local input; input=$(cat); jq -c "${1:-.}" <<<"$input" 2>/dev/null || printf '%s\n' "$input"; }
+
+cmd=${1:-help}
+shift || true
+case "$cmd" in
+  context)
+    id=$(issue_arg "${1:-}")
+    api GET "/api/issues/$id/heartbeat-context" | compact ;;
+  checkout)
+    id=$(issue_arg "${1:-}")
+    body=$(jq -nc --arg a "${PAPERCLIP_AGENT_ID:-}" '{agentId: $a, expectedStatuses: ["todo","backlog","blocked","in_review","in_progress"]}')
+    api POST "/api/issues/$id/checkout" "$body" | compact '{identifier, status, assigneeAgentId}' ;;
+  comment)
+    id=$(issue_arg "${1:-}")
+    text=$(stdin_text)
+    [ -n "$text" ] || { echo "pct comment: pipe the comment body on stdin" >&2; exit 2; }
+    api POST "/api/issues/$id/comments" "$(jq -nc --arg b "$text" '{body: $b}')" | compact '{id}' ;;
+  status)
+    if [ $# -ge 2 ]; then id=$(issue_arg "$1"); status=$2; else id=$(issue_arg ""); status=${1:?status required}; fi
+    text=$(stdin_text)
+    body=$(jq -nc --arg s "$status" --arg c "$text" 'if $c == "" then {status: $s} else {status: $s, comment: $c} end')
+    api PATCH "/api/issues/$id" "$body" | compact '{identifier, status}' ;;
+  comments)
+    id=$(issue_arg "${1:-}")
+    query="order=asc"
+    [ -n "${2:-}" ] && query="after=$2&order=asc"
+    api GET "/api/issues/$id/comments?$query" | compact '[.[] | {id, authorAgentId, authorUserId, createdAt, body}]' ;;
+  subtask)
+    parent=$(issue_arg "${1:-}")
+    title=${2:?title required}
+    assignee=${3:-}
+    text=$(stdin_text)
+    parent_id=$(api GET "/api/issues/$parent" | jq -r '.id')
+    body=$(jq -nc --arg p "$parent_id" --arg t "$title" --arg d "$text" --arg a "$assignee" \
+      '{parentId: $p, title: $t, description: $d, status: "todo"} + (if $a == "" then {} else {assigneeAgentId: $a} end)')
+    api POST "/api/companies/$PAPERCLIP_COMPANY_ID/issues" "$body" | compact '{id, identifier, status}' ;;
+  block)
+    id=$(issue_arg "${1:-}")
+    ids=${2:?comma-separated blocker issue ids required}
+    body=$(jq -nc --arg ids "$ids" '{status: "blocked", blockedByIssueIds: ($ids | split(","))}')
+    api PATCH "/api/issues/$id" "$body" | compact '{identifier, status}' ;;
+  approval)
+    id=$(issue_arg "${1:-}")
+    title=${2:?title required}
+    text=$(stdin_text)
+    issue_uuid=$(api GET "/api/issues/$id" | jq -r '.id')
+    body=$(jq -nc --arg a "${PAPERCLIP_AGENT_ID:-}" --arg i "$issue_uuid" --arg t "$title" --arg s "$text" \
+      '{type: "request_board_approval", requestedByAgentId: $a, issueIds: [$i], payload: {title: $t, summary: $s}}')
+    api POST "/api/companies/$PAPERCLIP_COMPANY_ID/approvals" "$body" | compact '{id, status}' ;;
+  inbox)
+    api GET "/api/agents/me/inbox-lite" | compact ;;
+  raw)
+    api "${1:?method}" "${2:?path}" "${3:-}" | compact ;;
+  help|*)
+    sed -n '/^| Do this/,/^$/p' "$(dirname "$(readlink -f "$0")")/../SKILL.md" ;;
+esac

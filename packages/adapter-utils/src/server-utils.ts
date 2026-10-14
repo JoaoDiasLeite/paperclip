@@ -4264,6 +4264,10 @@ export function resolveLegacyPaperclipDesiredSkillNames(
     config,
     availableEntries,
   );
+  // Agents that carry their own compact control-plane skill can set
+  // adapterConfig.paperclipOperationalSkillMount = false to skip the full
+  // operational skill (large SKILL.md + references) and its context cost.
+  if (config.paperclipOperationalSkillMount === false) return desiredSkills;
   const operationalEntry = availableEntries.find(
     (entry) =>
       entry.key.trim().toLowerCase() === PAPERCLIP_OPERATIONAL_SKILL_KEY,
