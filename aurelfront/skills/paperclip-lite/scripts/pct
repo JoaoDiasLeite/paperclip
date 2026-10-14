@@ -94,6 +94,16 @@ case "$cmd" in
         questions: [{id: "answer", prompt: $q, answerMode: "text", required: true}]}}}')
     api POST "/api/issues/$id/interactions" "$body" | compact '{id, status}'
     api PATCH "/api/issues/$id" '{"status":"in_review"}' | compact '{identifier, status}' ;;
+  doc)
+    id=$(issue_arg "${1:-}")
+    key=${2:?document key required}
+    title=${3:-$key}
+    text=$(stdin_text)
+    [ -n "$text" ] || { echo "pct doc: pipe the Markdown body on stdin" >&2; exit 2; }
+    base=$( { api GET "/api/issues/$id/documents/$key" 2>/dev/null || true; } | jq -r '.latestRevisionId // empty' 2>/dev/null || true)
+    body=$(jq -nc --arg t "$title" --arg b "$text" --arg r "$base" \
+      '{title: $t, format: "markdown", body: $b, baseRevisionId: (if $r == "" then null else $r end)}')
+    api PUT "/api/issues/$id/documents/$key" "$body" | compact '{key, latestRevisionId}' ;;
   inbox)
     api GET "/api/agents/me/inbox-lite" | compact ;;
   raw)

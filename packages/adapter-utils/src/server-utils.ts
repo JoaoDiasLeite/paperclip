@@ -4945,3 +4945,43 @@ export async function runChildProcess(
       .catch(reject);
   });
 }
+
+const MEMORY_DIGEST_DEFAULT_MAX_CHARS = 6000;
+const MEMORY_DIGEST_RELATIVE_PATH = path.join("memory", "DIGEST.md");
+
+/**
+ * Opt-in memory digest (adapterConfig.memoryDigest = true): a short durable note the agent keeps
+ * in $AGENT_HOME/memory/DIGEST.md. Injecting it into the prompt replaces the tool turns an agent
+ * would otherwise spend re-reading history or memory files at the start of every run. The digest
+ * is capped (adapterConfig.memoryDigestMaxChars, default 6000 characters) so it cannot grow into
+ * the cost it is meant to remove.
+ */
+export async function renderMemoryDigestNote(config: Record<string, unknown>, env: Record<string, string>): Promise<string> {
+  if (config.memoryDigest !== true) return "";
+  const agentHome = (env.AGENT_HOME ?? "").trim();
+  if (!agentHome) return "";
+  const configuredMax = Number(config.memoryDigestMaxChars);
+  const maxChars =
+    Number.isInteger(configuredMax) && configuredMax > 0 ? configuredMax : MEMORY_DIGEST_DEFAULT_MAX_CHARS;
+  let digest = "";
+  try {
+    digest = (await fs.readFile(path.join(agentHome, MEMORY_DIGEST_RELATIVE_PATH), "utf8")).trim();
+  } catch {
+    digest = "";
+  }
+  const body = !digest
+    ? "(empty: no digest saved yet)"
+    : digest.length > maxChars
+      ? `${digest.slice(0, maxChars)}\n[digest truncated at ${maxChars} characters]`
+      : digest;
+  return [
+    "## Memory digest",
+    "Durable notes you kept from earlier runs. Trust them unless the task or new comments say otherwise;",
+    "do not re-read old threads to rebuild what is already here.",
+    "",
+    body,
+    "",
+    `Before you exit, if something durable changed (a decision, an open thread, a client fact by ID, never personal data),`,
+    `rewrite $AGENT_HOME/${MEMORY_DIGEST_RELATIVE_PATH} in place. Keep it under ${maxChars} characters: replace stale lines, do not append a log.`,
+  ].join("\n");
+}

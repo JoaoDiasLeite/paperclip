@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { renderMemoryDigestNote } from "./execute.js";
+import { renderMemoryDigestNote } from "../server-utils.js";
 
 describe("renderMemoryDigestNote", () => {
   let agentHome: string;
