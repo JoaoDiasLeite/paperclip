@@ -1,4 +1,5 @@
 import type { ProviderQuotaResult } from "@paperclipai/shared";
+import { AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
 import { fetchAllQuotaWindows } from "./quota-windows.js";
 
 /**
@@ -72,6 +73,89 @@ export async function subscriptionQuotaBlockReason(
   if (!hot) return null;
   const resets = hot.resetsAt ? ` until it resets at ${hot.resetsAt}` : "";
   return `Subscription quota guard: ${provider} "${hot.label}" is at ${hot.usedPercent}% (limit ${threshold}%); new runs are deferred${resets}.`;
+}
+
+/**
+ * Quota fallback (adapterConfig.quotaFallback): when the agent's own subscription is over the
+ * quota-guard threshold, run this heartbeat on another adapter instead of deferring it, e.g.
+ *   { "adapterType": "antigravity_local", "model": "claude-sonnet-4-6", "config": { ... } }
+ * Instructions, memory digest, prompt templates, time limits, cwd and env carry over; adapter-
+ * specific keys (models, tool lists, skills, sessions) do not.
+ */
+export interface QuotaFallbackPlan {
+  reason: string;
+  adapterType: string;
+  config: Record<string, unknown>;
+}
+
+const FALLBACK_CARRY_KEYS = [
+  "instructionsFilePath",
+  "instructionsEntryFile",
+  "instructionsBundleMode",
+  "memoryDigest",
+  "memoryDigestMaxChars",
+  "promptTemplate",
+  "bootstrapPromptTemplate",
+  "timeoutSec",
+  "graceSec",
+  "cwd",
+  "env",
+] as const;
+
+export function readQuotaFallback(
+  config: Record<string, unknown> | null | undefined,
+): { adapterType: string; model: string | null; config: Record<string, unknown> } | null {
+  const raw = config?.quotaFallback;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const adapterType = typeof record.adapterType === "string" ? record.adapterType.trim() : "";
+  if (!adapterType) return null;
+  const model = typeof record.model === "string" && record.model.trim() ? record.model.trim() : null;
+  const extra =
+    typeof record.config === "object" && record.config !== null && !Array.isArray(record.config)
+      ? (record.config as Record<string, unknown>)
+      : {};
+  return { adapterType, model, config: extra };
+}
+
+/**
+ * Returns a plan to run on the fallback adapter, or null to run (or defer) normally. A fallback
+ * whose own provider is also over the threshold is not used, so both quotas keep their headroom.
+ */
+/**
+ * The primary's env carries its AI connection identity: an isolated HOME/XDG home and provider
+ * credentials injected by the AI connection runtime. The fallback CLI must use its own login, so
+ * those keys are dropped and everything else (user env bindings) carries over.
+ */
+function withoutProviderIdentityEnv(env: Record<string, unknown>): Record<string, unknown> {
+  const identityKeys = new Set<string>(["HOME", ...AI_AUTH_ENV_KEYS]);
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => !identityKeys.has(key) && !key.startsWith("XDG_")),
+  );
+}
+
+export async function resolveSubscriptionQuotaFallback(
+  adapterType: string,
+  config: Record<string, unknown> | null | undefined,
+  options: { env?: NodeJS.ProcessEnv; now?: number; fetcher?: QuotaFetcher } = {},
+): Promise<QuotaFallbackPlan | null> {
+  const fallback = readQuotaFallback(config);
+  if (!fallback || fallback.adapterType === adapterType) return null;
+  const reason = await subscriptionQuotaBlockReason(adapterType, options);
+  if (!reason) return null;
+  if (await subscriptionQuotaBlockReason(fallback.adapterType, options)) return null;
+  const carried: Record<string, unknown> = {};
+  for (const key of FALLBACK_CARRY_KEYS) {
+    if (config && key in config) carried[key] = config[key];
+  }
+  if (typeof carried.env === "object" && carried.env !== null && !Array.isArray(carried.env)) {
+    carried.env = withoutProviderIdentityEnv(carried.env as Record<string, unknown>);
+  }
+  return {
+    reason,
+    adapterType: fallback.adapterType,
+    config: { ...carried, ...(fallback.model ? { model: fallback.model } : {}), ...fallback.config },
+  };
 }
 
 export function resetSubscriptionQuotaGuardCacheForTests() {

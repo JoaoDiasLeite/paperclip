@@ -3,6 +3,7 @@ import type { ProviderQuotaResult } from "@paperclipai/shared";
 import {
   quotaGuardThresholdPercent,
   resetSubscriptionQuotaGuardCacheForTests,
+  resolveSubscriptionQuotaFallback,
   subscriptionQuotaBlockReason,
 } from "../services/subscription-quota-guard.ts";
 
@@ -75,5 +76,64 @@ describe("subscription quota guard", () => {
     await subscriptionQuotaBlockReason("claude_local", { env, fetcher, now: 1_000_000 });
     await subscriptionQuotaBlockReason("claude_local", { env, fetcher, now: 1_000_000 + 60_000 });
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("subscription quota fallback", () => {
+  beforeEach(() => {
+    resetSubscriptionQuotaGuardCacheForTests();
+  });
+
+  const config = {
+    model: "claude-sonnet-5",
+    instructionsFilePath: "/agents/athena/AGENTS.md",
+    memoryDigest: true,
+    timeoutSec: 1800,
+    claudeDeniedTools: ["Task"],
+    quotaFallback: { adapterType: "antigravity_local", model: "claude-sonnet-4-6", config: { effort: "medium" } },
+  };
+
+  it("plans a run on the fallback adapter when the primary subscription is hot", async () => {
+    const plan = await resolveSubscriptionQuotaFallback("claude_local", config, { env, fetcher: async () => [anthropic(90)] });
+    expect(plan?.adapterType).toBe("antigravity_local");
+    expect(plan?.reason).toContain("is at 90%");
+    expect(plan?.config).toEqual({
+      instructionsFilePath: "/agents/athena/AGENTS.md",
+      memoryDigest: true,
+      timeoutSec: 1800,
+      model: "claude-sonnet-4-6",
+      effort: "medium",
+    });
+  });
+
+  it("does nothing when the primary has headroom or no fallback is configured", async () => {
+    expect(await resolveSubscriptionQuotaFallback("claude_local", config, { env, fetcher: async () => [anthropic(10)] })).toBeNull();
+    resetSubscriptionQuotaGuardCacheForTests();
+    const { quotaFallback: _unused, ...withoutFallback } = config;
+    expect(await resolveSubscriptionQuotaFallback("claude_local", withoutFallback, { env, fetcher: async () => [anthropic(90)] })).toBeNull();
+  });
+
+  it("drops the primary's AI connection identity from the carried env", async () => {
+    const withEnv = {
+      ...config,
+      env: {
+        HOME: "/tmp/paperclip-ai-x",
+        XDG_CONFIG_HOME: "/tmp/paperclip-ai-x/config",
+        CLAUDE_CONFIG_DIR: "/tmp/paperclip-ai-x/provider",
+        CLAUDE_CODE_OAUTH_TOKEN: "secret",
+        COMPANY_REGION: "PT",
+      },
+    };
+    const plan = await resolveSubscriptionQuotaFallback("claude_local", withEnv, { env, fetcher: async () => [anthropic(90)] });
+    expect(plan?.config.env).toEqual({ COMPANY_REGION: "PT" });
+  });
+
+  it("does not fall back onto a provider that is also over the threshold", async () => {
+    const hotBoth = async () => [
+      anthropic(90),
+      { provider: "openai", ok: true, windows: [{ label: "5h limit", usedPercent: 95, resetsAt: null, valueLabel: null, detail: null }] } as ProviderQuotaResult,
+    ];
+    const toCodex = { ...config, quotaFallback: { adapterType: "codex_local" } };
+    expect(await resolveSubscriptionQuotaFallback("claude_local", toCodex, { env, fetcher: hotBoth })).toBeNull();
   });
 });

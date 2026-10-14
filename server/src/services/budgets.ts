@@ -26,7 +26,7 @@ import type {
 } from "@paperclipai/shared";
 import { BUDGET_METRICS } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
-import { subscriptionQuotaBlockReason } from "./subscription-quota-guard.js";
+import { resolveSubscriptionQuotaFallback, subscriptionQuotaBlockReason } from "./subscription-quota-guard.js";
 import { logActivity } from "./activity-log.js";
 
 type ScopeRecord = {
@@ -813,6 +813,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           companyId: agents.companyId,
           name: agents.name,
           adapterType: agents.adapterType,
+          adapterConfig: agents.adapterConfig,
         })
         .from(agents)
         .where(eq(agents.id, agentId))
@@ -897,7 +898,11 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       }
 
       const quotaReason = agent.adapterType ? await subscriptionQuotaBlockReason(agent.adapterType) : null;
-      if (quotaReason) {
+      const quotaFallback =
+        quotaReason && agent.adapterType
+          ? await resolveSubscriptionQuotaFallback(agent.adapterType, agent.adapterConfig as Record<string, unknown> | null)
+          : null;
+      if (quotaReason && !quotaFallback) {
         return {
           scopeType: "agent" as const,
           scopeId: agentId,

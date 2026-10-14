@@ -346,6 +346,7 @@ import { reportRunFailure } from "./run-failure-report.js";
 import { collectRunFailureSecretValues, type RunFailureReportOptions } from "./run-failure-diagnostics.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { resolveSubscriptionQuotaFallback } from "./subscription-quota-guard.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import {
   resolveDefaultAgentWorkspaceDir,
@@ -25059,20 +25060,51 @@ export function heartbeatService(
             if (managedMcpConfig) {
               adapterContext.paperclipManagedMcp = managedMcpConfig;
             }
+            // Over the subscription quota with a fallback configured: run this heartbeat on the
+            // fallback adapter. Its session is not stored, so the primary session resumes next time.
+            const quotaFallback = await resolveSubscriptionQuotaFallback(
+              agent.adapterType,
+              runtimeConfig as Record<string, unknown>,
+            ).catch(() => null);
+            let executingAdapter = adapter;
+            if (quotaFallback) {
+              try {
+                const fallbackAdapter = getServerAdapter(quotaFallback.adapterType);
+                executingAdapter = {
+                  ...fallbackAdapter,
+                  // Drop the fallback's session so the stored primary session is kept for the next run.
+                  execute: async (input) => {
+                    const result = { ...(await fallbackAdapter.execute(input)) };
+                    delete result.sessionId;
+                    delete result.sessionParams;
+                    delete result.sessionDisplayId;
+                    return { ...result, clearSession: false };
+                  },
+                };
+                const fallbackModel = typeof quotaFallback.config.model === "string" ? ` (${quotaFallback.config.model})` : "";
+                await onLog("stderr", `[paperclip] ${quotaFallback.reason} Running this heartbeat on ${quotaFallback.adapterType}${fallbackModel}.\n`);
+              } catch (err) {
+                await onLog("stderr", `[paperclip] Quota fallback adapter ${quotaFallback.adapterType} is unavailable: ${err instanceof Error ? err.message : String(err)}\n`);
+              }
+            }
+            const usingQuotaFallback = quotaFallback !== null && executingAdapter !== adapter;
+            const executingConfig = usingQuotaFallback ? quotaFallback!.config : runtimeConfig;
             const guardedDispatch =
               await dispatchResolvedInteractionContinuationWithAtomicGate(
                 (markDispatchStarted) => {
                   legacyAdapterEntered = true;
-                  return withAdapterExecutionPhase(executionPhaseContext, "adapter_execution", () => adapter.execute({
+                  return withAdapterExecutionPhase(executionPhaseContext, "adapter_execution", () => executingAdapter.execute({
                     getFreshSessionHandoff,
                     runId: run.id,
                     agent,
-                    runtime: runtimeForAdapter,
-                    config: runtimeConfig,
+                    runtime: usingQuotaFallback
+                      ? { ...runtimeForAdapter, sessionId: null, sessionParams: null, sessionDisplayId: null }
+                      : runtimeForAdapter,
+                    config: executingConfig,
                     context: adapterContext,
-                    executionContinuation: executionContinuation ?? null,
+                    executionContinuation: usingQuotaFallback ? null : (executionContinuation ?? null),
                     runtimeCommandSpec:
-                      adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
+                      executingAdapter.getRuntimeCommandSpec?.(executingConfig) ?? null,
                     executionTarget,
                     executionTransport: remoteExecution
                       ? {
