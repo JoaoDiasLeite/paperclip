@@ -14,7 +14,7 @@ AurelFront · NIS2Shield · {data} · Versão {n} · Confidencial
 
 - Classificação provável: {essencial | importante | provavelmente fora de âmbito} — {motivo numa frase}.
 - Maturidade global: {média 0-3} em 3.
-- Três prioridades: {1}, {2}, {3}.
+- Três prioridades (as três primeiras ações do plano): {1}, {2}, {3}.
 
 ## 2. Âmbito e classificação
 
@@ -44,7 +44,7 @@ Duas a quatro linhas: aprovação pela gestão, formação da gestão, responsá
 | # | Ação | Medida | Risco | Esforço (S/M/L) | Responsável sugerido | Prazo sugerido |
 |---|---|---|---|---|---|---|
 
-Ordenar por risco (alto primeiro) e depois por esforço (menor primeiro). Prazos: alto 0-3 meses, médio 3-6, baixo 6-12.
+Ordenar segundo a secção "Priority order" de `art21-map.md` (risco, depois criticidade da medida, depois esforço). As três prioridades do resumo executivo são as três primeiras linhas. Prazos: alto 0-3 meses, médio 3-6, baixo 6-12.
 
 ## 6. Notificação de incidentes
 

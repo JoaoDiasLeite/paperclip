@@ -27,5 +27,15 @@ Anything else legal: do not state it; flag it for counsel.
 ## Risk rating of a gap
 
 - High: score 0 on any measure, or below 2 on (b), (c), (i), (j).
+- High, whatever the score: an exposed system that cannot be defended, i.e. unsupported or unpatched systems (including OT/production PCs) reachable from the internet or by a third party (vendor remote access, flat network with office PCs). Name the systems in the gap.
 - Medium: below target but at least 1, not covered by High.
 - Low: at target but with missing evidence or overdue review.
+
+## Priority order (action plan and executive summary)
+
+Sort the action plan by:
+1. Risk: High, then Medium, then Low.
+2. Within the same risk, by measure criticality: (j), (c), (b), (i), (e), (d), (a), governance, (h), (g), (f). Rationale: account takeover, loss of data/production and undetected incidents cause the most damage to an SME; documentation and metrics follow.
+3. Then by effort: S before M before L.
+
+The executive summary's three priorities are the first three rows of the sorted plan.

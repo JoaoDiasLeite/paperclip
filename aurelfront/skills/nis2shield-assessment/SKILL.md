@@ -51,6 +51,6 @@ Target for an important/essential entity is 2 on every measure and 3 on (a), (b)
 1. Every measure (a)-(j) scored, with evidence IDs.
 2. Scores match the rubric in `art21-map.md`; no score without evidence.
 3. Classification reasoning is consistent with the scope answers.
-4. Every high-risk gap has an action, owner role and effort.
+4. Every high-risk gap has an action, owner role and effort; risk follows the map's rules (including exposed unpatched systems) and the plan follows its "Priority order".
 5. No legal claim beyond this skill's legal basis; deadlines quoted only from `art21-map.md`.
 6. Disclaimer present; PT-PT; no client data outside the report.
