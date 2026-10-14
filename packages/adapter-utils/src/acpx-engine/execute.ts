@@ -1575,6 +1575,7 @@ function buildSessionParams(input: {
 interface PaperclipClaudeSettingsResult {
   filePath: string;
   allow: string[];
+  deny: string[];
   additionalDirectories: string[];
   defaultMode: string;
   overrodeDontAsk: boolean;
@@ -1596,6 +1597,8 @@ async function writePaperclipClaudeSettings(input: {
   stateDir: string;
   agentHome: string;
   companyId: string;
+  /** adapterConfig.claudeDeniedTools: built-in tools to remove from the model's tool list. */
+  deniedTools?: string[];
 }): Promise<PaperclipClaudeSettingsResult> {
   const filePath = path.join(input.cwd, ".claude", "settings.local.json");
   const instanceRoot = defaultPaperclipInstanceDir();
@@ -1634,6 +1637,12 @@ async function writePaperclipClaudeSettings(input: {
     ? (existingPerms.additionalDirectories as unknown[]).filter((value): value is string => typeof value === "string")
     : [];
   const mergedAllow = uniqueSorted([...existingAllow, ...paperclipAllow]);
+  const existingDeny = Array.isArray(existingPerms.deny)
+    ? (existingPerms.deny as unknown[]).filter((value): value is string => typeof value === "string")
+    : [];
+  // Denying a whole tool removes its definition from every turn's context, which is the
+  // fixed per-turn cost of a Claude Code run. Merge so manual entries survive a rewrite.
+  const mergedDeny = uniqueSorted([...existingDeny, ...(input.deniedTools ?? [])]);
   const mergedAdditionalDirectories = uniqueSorted([
     ...existingAdditionalDirectories,
     ...paperclipAdditionalDirectories,
@@ -1647,6 +1656,7 @@ async function writePaperclipClaudeSettings(input: {
   const nextPermissions: Record<string, unknown> = {
     ...existingPerms,
     allow: mergedAllow,
+    ...(mergedDeny.length > 0 ? { deny: mergedDeny } : {}),
     additionalDirectories: mergedAdditionalDirectories,
     defaultMode,
   };
@@ -1659,6 +1669,7 @@ async function writePaperclipClaudeSettings(input: {
   return {
     filePath,
     allow: mergedAllow,
+    deny: mergedDeny,
     additionalDirectories: mergedAdditionalDirectories,
     defaultMode,
     overrodeDontAsk,
@@ -2085,11 +2096,16 @@ async function buildRuntime(input: {
       // still receives this run's actual AGENT_HOME.
       agentHome: asString(workspaceContext.agentHomeForPermissions, agentHome),
       companyId: agent.companyId,
+      deniedTools: Array.isArray(config.claudeDeniedTools)
+        ? (config.claudeDeniedTools as unknown[]).filter(
+            (value): value is string => typeof value === "string" && value.trim().length > 0,
+          )
+        : [],
     });
     skillCommandNotes.push(
       `Wrote Paperclip-managed Claude settings to ${paperclipClaudeSettings.filePath} (defaultMode=${paperclipClaudeSettings.defaultMode}${
         paperclipClaudeSettings.overrodeDontAsk ? "; overrode user dontAsk" : ""
-      }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)).`,
+      }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s), ${paperclipClaudeSettings.deny.length} denied tool(s)).`,
     );
   } else if (acpxAgent === "codex") {
     // Step 2 — codex-home.seed: the codex managed-home + skills preparation.

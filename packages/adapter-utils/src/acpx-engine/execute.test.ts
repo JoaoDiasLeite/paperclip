@@ -2594,6 +2594,31 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(note).toBeTruthy();
   });
 
+  it("writes claudeDeniedTools into the managed settings deny list only when configured", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const plainCwd = path.join(root, "plain");
+    const denyCwd = path.join(root, "deny");
+    await fs.mkdir(plainCwd, { recursive: true });
+    await fs.mkdir(denyCwd, { recursive: true });
+    const readPermissions = async (cwd: string) =>
+      (JSON.parse(await fs.readFile(path.join(cwd, ".claude", "settings.local.json"), "utf8")) as {
+        permissions?: { deny?: unknown };
+      }).permissions;
+
+    await runExecutor(
+      { agent: "claude", stateDir, cwd: plainCwd },
+      { context: { paperclipWorkspace: { cwd: plainCwd, agentHome: path.join(root, "agent-home") } } },
+    );
+    expect(await readPermissions(plainCwd)).not.toHaveProperty("deny");
+
+    await runExecutor(
+      { agent: "claude", stateDir, cwd: denyCwd, claudeDeniedTools: ["Task", "NotebookEdit", "", 7] },
+      { context: { paperclipWorkspace: { cwd: denyCwd, agentHome: path.join(root, "agent-home") } } },
+    );
+    expect((await readPermissions(denyCwd))?.deny).toEqual(["NotebookEdit", "Task"]);
+  });
+
   it("merges Paperclip allowlist into an existing .claude/settings.local.json without losing user entries", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

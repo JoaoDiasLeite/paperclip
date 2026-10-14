@@ -82,10 +82,22 @@ case "$cmd" in
     body=$(jq -nc --arg a "${PAPERCLIP_AGENT_ID:-}" --arg i "$issue_uuid" --arg t "$title" --arg s "$text" \
       '{type: "request_board_approval", requestedByAgentId: $a, issueIds: [$i], payload: {title: $t, summary: $s}}')
     api POST "/api/companies/$PAPERCLIP_COMPANY_ID/approvals" "$body" | compact '{id, status}' ;;
+  ask)
+    id=$(issue_arg "${1:-}")
+    text=$(stdin_text)
+    [ -n "$text" ] || { echo "pct ask: pipe the question on stdin" >&2; exit 2; }
+    issue_uuid=$(api GET "/api/issues/$id" | jq -r '.id')
+    key="question:$issue_uuid:$(date +%s)"
+    body=$(jq -nc --arg k "$key" --arg q "$text" '{
+      kind: "ask_user_questions", idempotencyKey: $k, resolverPolicy: "human_only", continuationPolicy: "wake_assignee",
+      payload: {version: 1, questionSet: {schema: "paperclip.question_set.v1",
+        questions: [{id: "answer", prompt: $q, answerMode: "text", required: true}]}}}')
+    api POST "/api/issues/$id/interactions" "$body" | compact '{id, status}'
+    api PATCH "/api/issues/$id" '{"status":"in_review"}' | compact '{identifier, status}' ;;
   inbox)
     api GET "/api/agents/me/inbox-lite" | compact ;;
   raw)
     api "${1:?method}" "${2:?path}" "${3:-}" | compact ;;
   help|*)
-    sed -n '/^| Do this/,/^$/p' "$(dirname "$(readlink -f "$0")")/../SKILL.md" ;;
+    sed -n '/^| Do this/,/^$/p' "$(dirname "$0")/../SKILL.md" ;;
 esac
