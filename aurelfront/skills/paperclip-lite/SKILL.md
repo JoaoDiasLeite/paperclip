@@ -27,7 +27,7 @@ Text arguments are read from **stdin** so Markdown and line breaks survive.
 | Comment | `pct comment [ISSUE] <<'EOF' ... EOF` |
 | Set status (+ optional comment) | `pct status [ISSUE] done <<'EOF' ... EOF` (stdin optional) |
 | Read new comments | `pct comments [ISSUE] [AFTER_COMMENT_ID]` |
-| Create a subtask | `pct subtask [PARENT] "Title" [ASSIGNEE_AGENT_ID] <<'EOF' description EOF` |
+| Create a subtask | `pct subtask [PARENT] "Title" [ASSIGNEE_AGENT_ID] [BLOCKER_IDS] <<'EOF' description EOF` (with blockers it starts `blocked`) |
 | Mark blocked by other issues | `pct block [ISSUE] ID1,ID2` |
 | Ask the board to approve something | `pct approval [ISSUE] "Title" <<'EOF' summary + recommendation EOF` |
 | Ask a person a question and wait | `pct ask [ISSUE] <<'EOF' question EOF` (saves the card, sets `in_review`) |

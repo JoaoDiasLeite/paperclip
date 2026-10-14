@@ -1580,6 +1580,18 @@ interface PaperclipClaudeSettingsResult {
   additionalDirectories: string[];
   defaultMode: string;
   overrodeDontAsk: boolean;
+  allowListOnly: boolean;
+}
+
+function readStringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim())
+    : [];
+}
+
+/** adapterConfig.claudeAllowedTools: when set, the agent may use only these tools. */
+function readClaudeAllowedTools(config: Record<string, unknown>): string[] {
+  return readStringList(config.claudeAllowedTools);
 }
 
 function uniqueSorted(values: Array<string | null | undefined>): string[] {
@@ -1600,6 +1612,12 @@ async function writePaperclipClaudeSettings(input: {
   companyId: string;
   /** adapterConfig.claudeDeniedTools: built-in tools to remove from the model's tool list. */
   deniedTools?: string[];
+  /**
+   * adapterConfig.claudeAllowedTools: an exclusive allow-list. The settings then hold exactly these
+   * allow rules (no Paperclip defaults, no rules left from earlier runs) with defaultMode "dontAsk",
+   * so Claude Code refuses every other tool without asking.
+   */
+  allowedTools?: string[];
 }): Promise<PaperclipClaudeSettingsResult> {
   const filePath = path.join(input.cwd, ".claude", "settings.local.json");
   const instanceRoot = defaultPaperclipInstanceDir();
@@ -1637,7 +1655,10 @@ async function writePaperclipClaudeSettings(input: {
   const existingAdditionalDirectories = Array.isArray(existingPerms.additionalDirectories)
     ? (existingPerms.additionalDirectories as unknown[]).filter((value): value is string => typeof value === "string")
     : [];
-  const mergedAllow = uniqueSorted([...existingAllow, ...paperclipAllow]);
+  const allowListOnly = (input.allowedTools ?? []).length > 0;
+  const mergedAllow = allowListOnly
+    ? uniqueSorted(input.allowedTools ?? [])
+    : uniqueSorted([...existingAllow, ...paperclipAllow]);
   const existingDeny = Array.isArray(existingPerms.deny)
     ? (existingPerms.deny as unknown[]).filter((value): value is string => typeof value === "string")
     : [];
@@ -1650,9 +1671,10 @@ async function writePaperclipClaudeSettings(input: {
   ]);
   const existingDefaultMode =
     typeof existingPerms.defaultMode === "string" ? (existingPerms.defaultMode as string) : "";
-  const defaultMode =
-    existingDefaultMode && existingDefaultMode !== "dontAsk" ? existingDefaultMode : "default";
-  const overrodeDontAsk = existingDefaultMode === "dontAsk";
+  const defaultMode = allowListOnly
+    ? "dontAsk"
+    : existingDefaultMode && existingDefaultMode !== "dontAsk" ? existingDefaultMode : "default";
+  const overrodeDontAsk = !allowListOnly && existingDefaultMode === "dontAsk";
 
   const nextPermissions: Record<string, unknown> = {
     ...existingPerms,
@@ -1674,6 +1696,7 @@ async function writePaperclipClaudeSettings(input: {
     additionalDirectories: mergedAdditionalDirectories,
     defaultMode,
     overrodeDontAsk,
+    allowListOnly,
   };
 }
 
@@ -1942,7 +1965,9 @@ async function buildRuntime(input: {
   // thought text and intermediate narration cannot become issue comments.
   const coalescePlaceholderToolUpdates = config.coalescePlaceholderToolUpdates === true;
   const mode = normalizeMode(config);
-  const permissionMode = normalizePermissionMode(config);
+  // A Claude tool allow-list also refuses any permission request that reaches the ACP client.
+  const permissionMode =
+    acpxAgent === "claude" && readClaudeAllowedTools(config).length > 0 ? "deny-all" : normalizePermissionMode(config);
   const nonInteractivePermissions = normalizeNonInteractivePermissions(config);
   const requestedModel = asString(config.model, "").trim();
   const requestedThinkingEffort = normalizeRequestedThinkingEffort(config);
@@ -2102,11 +2127,12 @@ async function buildRuntime(input: {
             (value): value is string => typeof value === "string" && value.trim().length > 0,
           )
         : [],
+      allowedTools: readClaudeAllowedTools(config),
     });
     skillCommandNotes.push(
       `Wrote Paperclip-managed Claude settings to ${paperclipClaudeSettings.filePath} (defaultMode=${paperclipClaudeSettings.defaultMode}${
         paperclipClaudeSettings.overrodeDontAsk ? "; overrode user dontAsk" : ""
-      }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s), ${paperclipClaudeSettings.deny.length} denied tool(s)).`,
+      }${paperclipClaudeSettings.allowListOnly ? "; allow-list only" : ""}, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s), ${paperclipClaudeSettings.deny.length} denied tool(s)).`,
     );
   } else if (acpxAgent === "codex") {
     // Step 2 — codex-home.seed: the codex managed-home + skills preparation.

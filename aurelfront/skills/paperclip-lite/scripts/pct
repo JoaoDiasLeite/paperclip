@@ -64,10 +64,13 @@ case "$cmd" in
     parent=$(issue_arg "${1:-}")
     title=${2:?title required}
     assignee=${3:-}
+    blockers=${4:-}
     text=$(stdin_text)
     parent_id=$(api GET "/api/issues/$parent" | jq -r '.id')
-    body=$(jq -nc --arg p "$parent_id" --arg t "$title" --arg d "$text" --arg a "$assignee" \
-      '{parentId: $p, title: $t, description: $d, status: "todo"} + (if $a == "" then {} else {assigneeAgentId: $a} end)')
+    # With blockers the subtask is created blocked, so its assignee is not woken before them.
+    body=$(jq -nc --arg p "$parent_id" --arg t "$title" --arg d "$text" --arg a "$assignee" --arg b "$blockers" \
+      '{parentId: $p, title: $t, description: $d, status: "todo"} + (if $a == "" then {} else {assigneeAgentId: $a} end)
+       + (if $b == "" then {} else {status: "blocked", blockedByIssueIds: ($b | split(","))} end)')
     api POST "/api/companies/$PAPERCLIP_COMPANY_ID/issues" "$body" | compact '{id, identifier, status}' ;;
   block)
     id=$(issue_arg "${1:-}")

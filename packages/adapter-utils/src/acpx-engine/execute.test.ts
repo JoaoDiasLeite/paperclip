@@ -2594,6 +2594,28 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(note).toBeTruthy();
   });
 
+  it("writes claudeAllowedTools as an exclusive allow-list with dontAsk and deny-all", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "allow");
+    await fs.mkdir(path.join(cwd, ".claude"), { recursive: true });
+    await fs.writeFile(
+      path.join(cwd, ".claude", "settings.local.json"),
+      JSON.stringify({ permissions: { allow: ["Bash(curl:*)"], defaultMode: "default" } }),
+    );
+
+    const run = await runExecutor(
+      { agent: "claude", stateDir, cwd, claudeAllowedTools: ["Read", "Bash(pct:*)", "", 3, "Read"] },
+      { context: { paperclipWorkspace: { cwd, agentHome: path.join(root, "agent-home") } } },
+    );
+    const permissions = (JSON.parse(await fs.readFile(path.join(cwd, ".claude", "settings.local.json"), "utf8")) as {
+      permissions?: { allow?: unknown; defaultMode?: unknown };
+    }).permissions;
+    expect(permissions?.allow).toEqual(["Bash(pct:*)", "Read"]);
+    expect(permissions?.defaultMode).toBe("dontAsk");
+    expect(run.runtimeOptions[0]?.permissionMode).toBe("deny-all");
+  });
+
   it("writes claudeDeniedTools into the managed settings deny list only when configured", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
